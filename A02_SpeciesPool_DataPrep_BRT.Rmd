@@ -1,0 +1,1005 @@
+---
+title: 'Project #11 - sPecies pools - Data Preparation'
+output:
+html_document: default
+word_document: default
+always_allow_html: yes
+---
+
+
+<center>
+  ![](https://www.idiv.de/fileadmin/content/Files_sDiv/sDiv_Workshops_Photos_Docs/sDiv_WS_Documents_sPlot/splot-long-rgb.png "sPlot Logo")
+</center>
+  
+    
+      
+        
+**Timestamp:** `r date()`  
+**Drafted:** Francesco Maria Sabatini  
+**Revised:**   
+**Version:** 2.2  
+  
+
+This report documents the preparation of explanatory variables for **sPlot project proposal #11** - *Global hotspots of local and regional plant diversity*.   
+
+**Changes of v2.2** Checks for NA in ecoregion and continent, and assigns values from nearest neightbout polygon  
+
+```{r, message=F, warning=F}
+library(tidyverse)
+library(foreign)
+library(data.table)
+library(gbm)
+library(dismo)
+library(sp)
+library(rgdal)
+library(rworldmap)
+library(raster)
+library(rgeos)
+library(RStoolbox)
+library(ggrepel)
+#library(elevatr)
+```
+
+```{r, echo=F}
+# set folders for storing temporary files
+rasterOptions(tmpdir="/data/sPlot/users/Francesco/_tmp")
+write("TMPDIR = /data/sPlot/users/Francesco/_tmp", file=file.path(Sys.getenv('TMPDIR'), '.Renviron'))
+write("R_USER = /data/sPlot/users/Francesco/_tmp", file=file.path(Sys.getenv('R_USER'), '.Renviron'))
+```
+
+# 1. Input data
+## 1.1 sPlot data 
+```{r}
+#load("/data/sPlot/releases/sPlot2.1/DT2_20161025.RData")
+#dt_beals <- "../sPlot/_derived_data/DT_beals_sPlot.rData"
+load("/data/sPlot/releases/sPlot2.1/sPlot_header_20161124.RData")
+### Header.fix moved to section 3.3, to avoid recomputing all predictors
+```
+
+## 1.2 Vector predictors
+### 1.2.1 Ecoregions
+Including an estimation of species richness per ecoregion from [Kier et al. 2005](https://onlinelibrary.wiley.com/doi/full/10.1111/j.1365-2699.2005.01272.x) 
+```{r, message=F}
+##Import spatial data on Ecoregions
+ecoreg <- readOGR("../sPlot/_Ancillary/official", layer="wwf_terr_ecos")
+EcoRichness <- xlsx::read.xlsx("../sPlot/_Ancillary/Kier_et_al_SI_jbi_1272_sm_sa2.xls", 
+                               sheetIndex = 1, startRow = 4, header=T)
+ecoreg@data <- ecoreg@data %>% 
+  dplyr::select(OBJECTID, ECO_NAME, REALM, BIOME, ECO_NUM, ECO_ID, eco_code)
+
+```
+### 1.2.2 Continents
+```{r}
+sPDF <- rworldmap::getMap(resolution="coarse")
+continent <- sPDF[,"continent"]
+continent@data[243,"continent"] <- "South America" ## Manually correct missing data
+# create clipped version of continent to avoid going beyond 180 lON
+coords <- data.frame(x=c(-180,180,180,-180),
+                     y=c(-90,-90,90,90))
+bboxc = Polygon(coords)
+bboxc = SpatialPolygons(list(Polygons(list(bboxc), ID = "a")), proj4string=crs(continent))
+continent_clipped <- gIntersection(continent[-137,], bboxc, byid=T) # polygon 137 gives problems... workaround
+```
+### 1.2.3 Grasslands of the World
+The layer of the grasslands of the world derive from [Dixon et al. 2014](https://onlinelibrary.wiley.com/doi/full/10.1111/jbi.12381)
+
+```{r}
+WGT <- readOGR(dsn="../sPlot/_Ancillary/WorldGrasslands_Dixon/WorldGrasslandTypes", 
+               layer="WorldGrasslandTypes2014_WGS84")
+```
+
+
+
+
+## 1.3 Raster data
+Download, import and reproject all raster data to same extent, CRS and resolution. Stack them and save derived files for easier future work  
+### 1.3.1 sBiomes
+```{r}
+sBiomes.shp <- readOGR(dsn="../../Ancillary_Data/Biomes_sPlot/", layer="sBiomes")
+sBiomes.labels <- sBiomes.shp@data
+## checked: BiomeIDs match with sBiomes
+sBiomes <- raster("../sPlot/_Ancillary/sBiome_raster01/sBiomes_raster01.tif")
+```
+
+### 1.3.2 Climate
+Soil data derive from ISRIC. Climate from CHELSA. 
+Download.
+```{r, message=F, warning=F, eval=F}
+library(downloader)
+url.chelsa <- list()
+for(i in 1:19){
+  ii <- stringr::str_pad(1:19, width=2, side="left", pad="0")[i]
+  url.chelsa[[i]] <- paste("https://www.wsl.ch/lud/chelsa/data/bioclim/integer/CHELSA_bio10_", ii, ".tif", sep="")
+  download(url.chelsa[[i]],
+           paste("/data/sPlot/users/Francesco/Ancillary_Data/CHELSA/CHELSA_bio10_", ii, ".tif", sep=""), 
+           mode = "wb")
+}
+```
+Load and stack Climate layers~~. Run PCA~~
+```{r, warning=F, message=F, eval=T}
+CHELSA.stack <- stack(paste("/data/sPlot/users/Francesco/Ancillary_Data/CHELSA/CHELSA_bio10_", 
+                            stringr::str_pad(1:19, width=2, side="left", pad="0"), ".tif", sep=""))
+
+#system.time(PCA4.climate <- rasterPCA(CHELSA.stack, nSamples = 5000, nComp = 4, spca = T))
+#summary(PCA4.climate$model)
+#loadings(PCA4.climate$model)
+#save(PCA4.climate, file = "../sPlot/_predictors/PCA4.climate.RData")
+```
+
+
+
+### 1.3.3 Soil 
+Download ISRIC soil data at 5 cm depth (250 m horizontal resolution)  
+```{r, eval=F}
+url.bulk <- "https://files.isric.org/soilgrids/data/recent/BLDFIE_M_sl2_250m_ll.tif"
+url.cec <- "https://files.isric.org/soilgrids/data/recent/CECSOL_M_sl2_250m_ll.tif"
+url.cly <- "https://files.isric.org/soilgrids/data/recent/CLYPPT_M_sl2_250m_ll.tif"
+url.crf <- "https://files.isric.org/soilgrids/data/recent/CRFVOL_M_sl2_250m_ll.tif"
+url.orc <- "https://files.isric.org/soilgrids/data/recent/ORCDRC_M_sl2_250m_ll.tif"
+url.pH <- "https://files.isric.org/soilgrids/data/recent/PHIHOX_M_sl2_250m_ll.tif"
+url.slt <- "https://files.isric.org/soilgrids/data/recent/SLTPPT_M_sl2_250m_ll.tif"
+url.snd <- "https://files.isric.org/soilgrids/data/recent/SNDPPT_M_sl2_250m_ll.tif"
+
+download(url.bulk, "/data/sPlot/users/Francesco/Ancillary_Data/ISRIC/BLDFIE_M_sl2_250m_ll.tif", mode = "wb")
+download(url.cec, "/data/sPlot/users/Francesco/Ancillary_Data/ISRIC/CECSOL_M_sl2_250m_ll.tif", mode = "wb")
+download(url.cly, "/data/sPlot/users/Francesco/Ancillary_Data/ISRIC/CLYPPT_M_sl2_250m_ll.tif", mode = "wb")
+download(url.crf, "/data/sPlot/users/Francesco/Ancillary_Data/ISRIC/CRFVOL_M_sl2_250m_ll.tif", mode = "wb")
+download(url.orc, "/data/sPlot/users/Francesco/Ancillary_Data/ISRIC/ORCDRC_M_sl2_250m_ll.tif", mode = "wb")
+download(url.pH, "/data/sPlot/users/Francesco/Ancillary_Data/ISRIC/PHIHOX_M_sl2_250m_ll.tif", mode = "wb")
+download(url.slt, "/data/sPlot/users/Francesco/Ancillary_Data/ISRIC/SLTPPT_M_sl2_250m_ll.tif", mode = "wb")
+download(url.snd, "/data/sPlot/users/Francesco/Ancillary_Data/ISRIC/SNDPPT_M_sl2_250m_ll.tif", mode = "wb")
+```
+
+Load and stack soil layers ~~and run PCA~~
+```{r, message=F, eval=T}
+ISRIC.stack <- stack(list.files("/data/sPlot/users/Francesco/Ancillary_Data/ISRIC/", 
+                                pattern = "^[^(Gene)]", full.names = T))
+
+### PCA4.soil takes forever!
+#PCA4.soil <- rasterPCA(ISRIC.stack, nSamples = 5000, nComp = 4, spca = T)
+#summary(PCA4.soil$model)
+#loadings(PCA4.soil$model)
+#save(PCA4.soil, file = "../sPlot/_derived_data/PCA4.soil.RData")
+
+#PCA4.soil.repr <- projectRaster(PCA4.soil$map, PCA4.climate$map)
+#writeRaster(PCA4.soil.repr@map, filename = "../sPlot/_derived_data/PCA4.soil.repr.tif")
+
+```
+
+
+
+### 1.3.4 Topography data
+ADDED 27.09.2019 - Topography derives from [Earthenv.org](http://www.earthenv.org/topography)  
+Download topography data - Topographic Roughness Index, Landform (majority) at 1 km resolution and number of Landforms at 50 km res.
+```{r, eval=F}
+library(downloader)
+url.elevation1km <- "https://data.earthenv.org/topography/elevation_1KMmd_GMTEDmd.tif"
+#url.tri1km <- "https://data.earthenv.org/topography/tri_1KMmd_GMTEDmd.tif"
+url.tri50km <- "https://data.earthenv.org/topography/tri_50KMmd_GMTEDmd.tif"
+#url.landform1km.count <- "https://data.earthenv.org/topography/geom_1KMcount_GMTEDmd.tif"
+url.landform1km.maj <- "https://data.earthenv.org/topography/geom_1KMmaj_GMTEDmd.tif"
+url.landform50km.count <- "https://data.earthenv.org/topography/geom_50KMcount_GMTEDmd.tif"
+
+download(url.elevation1km, 
+         "/data/sPlot/users/Francesco/Ancillary_Data/EarthEnv/elevation_1KMmd_GMTEDmd.tif", mode = "wb")
+#download(url.tri1km, 
+#         "/data/sPlot/users/Francesco/Ancillary_Data/EarthEnv/tri_1KMmd_GMTEDmd.tif", mode = "wb")
+download(url.tri50km, 
+         "/data/sPlot/users/Francesco/Ancillary_Data/EarthEnv/tri_50KMmd_GMTEDmd.tif", mode = "wb")
+#download(url.landform1km.count,
+#         "/data/sPlot/users/Francesco/Ancillary_Data/EarthEnv/geom_1KMcount_GMTEDmd.tif", mode = "wb")
+download(url.landform1km.maj,
+         "/data/sPlot/users/Francesco/Ancillary_Data/EarthEnv/geom_1KMmaj_GMTEDmd.tif", mode = "wb")
+download(url.landform50km.count, 
+         "/data/sPlot/users/Francesco/Ancillary_Data/EarthEnv/geom_50KMcount_GMTEDmd.tif", mode = "wb")
+```
+Load Topography rasters
+```{r, eval=T}
+#tri1km <- raster("/data/sPlot/users/Francesco/Ancillary_Data/EarthEnv/tri_1KMmd_GMTEDmd.tif")
+tri50km <- raster("/data/sPlot/users/Francesco/Ancillary_Data/EarthEnv/tri_50KMmd_GMTEDmd.tif")
+#tri50km <- mask(x = tri50km, mask = continent_clipped)
+#landform1km.count <- raster("/data/sPlot/users/Francesco/Ancillary_Data/EarthEnv/geom_1KMcount_GMTEDmd.tif")
+landform50km.count <- raster("/data/sPlot/users/Francesco/Ancillary_Data/EarthEnv/geom_50KMcount_GMTEDmd.tif")
+```
+Mask raster of landforms to only terrestrial areas
+```{r, eval=F}
+elevation1km <- raster("/data/sPlot/users/Francesco/Ancillary_Data/EarthEnv/elevation_1KMmd_GMTEDmd.tif")
+landform1km.maj <- raster("/data/sPlot/users/Francesco/Ancillary_Data/EarthEnv/geom_1KMmaj_GMTEDmd.tif")
+landform1km.maj <- landform1km.maj*(elevation1km>0)
+landform1km.maj <- writeRaster(landform1km.maj, 
+                               filename = "../sPlot/_predictors/landform1km.maj.masked.tif",
+                               overwrite=T)
+rm(elevation1km, landform1km.maj)
+```
+Reload output
+```{r}
+landform1km.maj <- raster("../sPlot/_predictors/landform1km.maj.masked.tif")
+```
+
+
+### 1.3.5 Velocity of Climate Change
+Derived from [Sandel et al. 2011](https://science.sciencemag.org/content/334/6056/660.full).  
+Climate-change velocity is a measure of the local rate of displacement of climatic conditions over Earth’s surface. It integrates macroclimatic shifts with local spatial topoclimate gradients and is calculated by dividing the rate of climate change through time by the local rate of climate change across space, yielding a local instantaneous velocity measure.
+```{r, eval=T}
+CCV.Prec <- raster("../sPlot/_Ancillary/ClimateChangeVelocity/LGM to Present Precipitation Velocity.tif")
+CCV.Temp <- raster("../sPlot/_Ancillary/ClimateChangeVelocity/LGM to Present Temperature Velocity.tif")
+```
+
+###1.3.6 Map of current forests
+Download [FAO map of forest distribution](http://www.fao.org/forestry/fra/80298/en/)
+```{r, eval=F}
+URL <- "http://foris.fao.org/static/data/fra2010/fra2010.zip"
+#download.file(URL, destfile = "../../Ancillary_Data/ForestResourceAssessment_FAO2010.zip ", method="curl")
+```
+Load
+```{r}
+fra <- raster("../../Ancillary_Data/fra2010_WGS84_QGIS_01.tif")
+values(fra)[which(values(fra)==255 | is.na(values(fra)))] <- 0
+```
+
+### 1.3.7 Consensus Land-Cover Map - Herbaceous Vegetation
+A dataset integrating multiple global remote sensing-derived land-cover products and providing consensus information on the prevalence of 12 land-cover classes at 1-km resolution. The dataset is available on [http://www.earthenv.org/landcover](http://www.earthenv.org/landcover) and is described in [Tuanmu & Jetz (2014)](https://onlinelibrary.wiley.com/doi/epdf/10.1111/geb.12182).  
+Download
+```{r, eval=F}
+URL_LC_herbaceous <- "https://data.earthenv.org/consensus_landcover/with_DISCover/consensus_full_class_6.tif"
+download.file(URL_LC_herbaceous, destfile = "../sPlot/_Ancillary/LandCover_Consensus/consensus_full_class_6.tif",
+              method="curl")
+URL_LC_shrubs <- "https://data.earthenv.org/consensus_landcover/with_DISCover/consensus_full_class_5.tif"
+download.file(URL_LC_shrubs, destfile = "../sPlot/_Ancillary/LandCover_Consensus/consensus_full_class_5.tif",
+              method="curl")
+```
+Load 
+```{r, eval=F}
+LC_herb <- raster("../sPlot/_Ancillary/LandCover_Consensus/consensus_full_class_6.tif")
+LC_shrub <- raster("../sPlot/_Ancillary/LandCover_Consensus/consensus_full_class_5.tif")
+#reduce resolution to 10km, to make it compatible with res of world.spat (0.1°)
+LC_herb <- raster::aggregate(LC_herb, fact=10) 
+LC_shrub <- raster::aggregate(LC_shrub, fact=10)
+```
+
+
+### 1.3.8 WRI map of potential forest coverage 
+The map of potential forest coverage derives from the [Atlas of Forest Landscape Restoration Opportunities](http://www.wri.org/applications/maps/flr-atlas/#) of the World Resource Institute (WRI). The map is also described [here](https://www.wri.org/resources/maps/atlas-forest-and-landscape-restoration-opportunities).
+```{r}
+WRI.for <- raster("../sPlot/_Ancillary/ForestStatus_WRI/foreststatus_WRI2.tif")
+values(WRI.for)[which(values(WRI.for)>0)] <- 1
+```
+
+
+
+```{r, echo=F, eval=F}
+#### NOT CONSIDERED AT THE MOMENT
+
+
+### 1.3.5 Habitat Heterogeneity
+#I extracted the suggested 6 (out of 14) heterogeneity metrics developed by [Tuanmu & Jetz (2005)](https://onlinelibrary.wiley.com/doi/epdf/10.1111/geb.12365]), and available at [http://www.earthenv.org](http://www.earthenv.org). These are based on the textural features of the enhanced vegetation index (EVI) imagery from the Moderate Resolution Imaging Spectroradiometer (MODIS). I extract the features a 25km resolution, and aggregate to 50 km resolution, as a measure of habitat heterogeneity within the 20km radius around target plot.   
+#Download
+HH.shannon25km <- "https://data.earthenv.org/habitat_heterogeneity/25km/cv_01_05_25km_uint16.tif"
+HH.Evenness25km <- "https://data.earthenv.org/habitat_heterogeneity/25km/evenness_01_05_25km_uint16.tif"
+HH.Simpson25km <- "https://data.earthenv.org/habitat_heterogeneity/25km/simpson_01_05_25km_uint16.tif"
+HH.Range25km <- "https://data.earthenv.org/habitat_heterogeneity/25km/range_01_05_25km_uint16.tif"
+HH.StDev25km <- "https://data.earthenv.org/habitat_heterogeneity/25km/std_01_05_25km_uint16.tif"
+HH.CoefVar25km <- "https://data.earthenv.org/habitat_heterogeneity/25km/cv_01_05_25km_uint16.tif"
+```
+
+
+#2. World predictors
+Create SpatialPointsDataFrame of the world with a 0.01 degree resolution (DOUBLE CHECK the effective res!)
+```{r}
+load("/data/sPlot2.0/splot.world2.RData")
+world.spat <- SpatialPointsDataFrame(coords = splot.world2 %>% 
+                                       dplyr::select(RAST_X, RAST_Y), 
+                                     data = data.frame(RAST_ID=splot.world2$RAST_ID),
+                                     proj4string = crs(ecoreg))
+#save(world.spat, file="../sPlot/_derived_data/world.shp.RData")
+```
+
+
+## 2.1 Extract from rasters
+```{r, eval=F, warning=F, message=F}
+library(snow)
+beginCluster(n=4)
+#CHELSA x 19  
+system.time(chelsa.world <- raster::extract(CHELSA.stack, world.spat)) #ok
+chelsa.world <- as.data.frame(chelsa.world) %>% 
+  rename_at(.vars=vars(starts_with("CHELSA")),
+            .funs=~stringr::str_sub(., -8,-1)) %>% 
+  rename_at(.vars=vars(starts_with("bio10_")),
+            .funs=~gsub(pattern="bio10_", replacement="bio_", x=.))
+#ISRIC x 8
+system.time(isric.world <- raster::extract(ISRIC.stack, world.spat))
+isric.world <- as.data.frame(isric.world) %>% 
+  rename_all(.funs = list(~stringr::str_sub(., 1, 6)))
+# Topo 3x
+system.time(tri50km.world <- raster::extract(tri50km, world.spat)) #ok
+system.time(landform1km.maj.world <- raster::extract(landform1km.maj, world.spat))
+landform1km.maj.world <- factor(landform1km.maj.world, levels=1:10, labels=c("flat", "peak", "ridge", 
+                                                                         "shoulder", "spur", "slope",
+                                                                         "hollow", "footslope", "valley",
+                                                                         "pit"))
+
+landform50km.count.world <- raster::extract(landform50km.count, world.spat)
+# CCV
+system.time(CCV.Temp.world <- raster::extract(CCV.Temp, world.spat))
+system.time(CCV.Prec.world <- raster::extract(CCV.Prec, world.spat))
+# forest
+isforest <- data.frame(isforest=extract(fra, world.spat)>40)
+isforest[is.na(isforest)] <- F
+potforest <- data.frame(potforest=extract(WRI.for, world.spat))
+#isgrassland
+system.time(isgrassland <- data.frame(isgrassland=extract(LC_herb, world.spat)))
+#isshrubland
+system.time(isshrubland <- data.frame(isshrubland=extract(LC_shrub, world.spat)))
+endCluster()
+
+save(chelsa.world, isric.world, 
+     tri50km.world,landform1km.maj.world, landform50km.count.world, 
+     CCV.Temp.world, CCV.Prec.world, 
+     isforest, potforest, isgrassland, isshrubland,
+     file="../sPlot/_predictors/predictors_world.RData")
+
+
+
+```
+
+## 2.2 Overlay with vectors
+```{r, eval=F}
+#Ecoregions
+system.time(ecoreg.world <- sp::over(x=world.spat, y=ecoreg)) #1710.362
+#sBiomes
+system.time(sBiomes.world <- extract(sBiomes, world.spat)) ##26.706
+## continent
+continent.world <- data.frame(CONTINENT=sp::over(x=world.spat, y=continent))
+# WGT
+tmp <- spTransform(world.spat, CRSobj = crs(WGT))
+isgrassland.tmp <- sp::over(tmp, WGT)
+isgrassland.WGT <- !is.na(isgrassland.tmp$ECO_NAME)
+rm(tmp, isgrassland.tmp)
+
+save(chelsa.world, isric.world, 
+     tri50km.world,landform1km.maj.world, landform50km.count.world, 
+     CCV.Temp.world, CCV.Prec.world, 
+     isforest, potforest, isgrassland, isshrubland, isgrassland.WGT, 
+     ecoreg.world, sBiomes.world, continent.world, isgrassland,
+     file="../sPlot/_predictors/predictors_world.RData")
+
+
+```
+## 2.3 Compile data.frame of predictors for the world
+```{r, warning=F}
+#reload predictors
+load("../sPlot/_predictors/predictors_world.RData")
+
+#Compile data.frame
+world.over <- world.spat@data %>%
+  as.tbl() %>% 
+  bind_cols(as.data.frame(world.spat@coords) %>% 
+              rename(POINT_X=RAST_X, POINT_Y=RAST_Y)) %>% 
+  bind_cols(chelsa.world) %>% 
+  bind_cols(isric.world) %>% 
+  mutate(CCVPre=CCV.Prec.world) %>% 
+  mutate(CCVTem=CCV.Temp.world) %>% 
+  mutate(tri50km=tri50km.world) %>% 
+  mutate(landform1km.maj=landform1km.maj.world) %>% 
+  mutate(landform50km.count=landform50km.count.world) %>% 
+  bind_cols(isforest) %>% 
+  bind_cols(potforest) %>% 
+  bind_cols(isgrassland) %>% 
+  bind_cols(isshrubland) %>% 
+  mutate(totgrassland=isgrassland) %>% 
+  mutate(isgrassland=isgrassland>0) %>% 
+  mutate(potgrassland=isgrassland.WGT) %>% 
+  bind_cols(ecoreg.world %>% 
+              dplyr::select(ECO_NAME, eco_code, REALM)) %>% 
+  left_join(EcoRichness %>%
+              dplyr::select(eco_id2, sp_wfig) %>%
+              dplyr::rename(eco_code=eco_id2), by="eco_code") %>% 
+  mutate(sBiomeID=sBiomes.world) %>%
+  left_join(sBiomes.labels %>% 
+              dplyr::select(BiomeID, Name) %>%
+              rename(sBiomeID=BiomeID, sBiomeName=Name),
+            by="sBiomeID") %>%
+  bind_cols(continent.world %>% 
+              mutate(CONTINENT=factor(continent, 
+                                      levels=c("Africa", "Antarctica", "Australia", 
+                                               "Eurasia", "North America", "South America"),
+                            labels=c("AF", "AN", "AU", "EU", "NA", "SA"))) %>% 
+              dplyr::select(CONTINENT))
+```
+
+## 2.4 PCA of Climate and Soil
+### 2.4.1 PCA of climate
+```{r}
+chelsa.world.avg <- apply(chelsa.world %>% 
+                            filter(complete.cases(.)), MARGIN=2, "mean")
+chelsa.world.sd <- apply(chelsa.world %>% 
+                            filter(complete.cases(.)), MARGIN=2, "sd")
+chelsa.pca <- prcomp(chelsa.world %>% 
+                            filter(complete.cases(.)), center = T, scale = T)
+summary(chelsa.pca)
+
+expl.var <- round((chelsa.pca$sdev^2/sum(chelsa.pca$sdev^2)*100),1)
+### ENVFIT - first 5 PC axes explain >90% of variation
+set.seed(15)
+sa.chelsa <- sample(1:nrow(chelsa.world %>% 
+                      filter(complete.cases(.))), 10000)
+pca.envfit.chelsa <- vegan::envfit(chelsa.pca$x[sa.chelsa,], chelsa.world %>% 
+                                                                filter(complete.cases(.)) %>%
+                                          slice(sa.chelsa),
+                     choices = c(1:5))
+print(pca.envfit.chelsa)
+```
+
+Graph of PCA - climate
+```{r, fig.width=10, fig.height=5, fig.align="center", eval=F}
+write_csv(as.data.frame(pca.envfit.chelsa$vectors[[1]]), 
+          path ="../sPlot/_derived_data/Resample1/Envfit_Climate.csv")
+
+# get vectors of projected environmental variables
+
+vec.sp.df <- as.data.frame(pca.envfit.chelsa$vectors$arrows*sqrt(pca.envfit.chelsa$vectors$r)) *10
+vec.sp.df$Var <- paste0("Clim", 1:nrow(vec.sp.df))
+
+PC.bioclim.12 <- ggplot(data= chelsa.pca$x %>% 
+                                   as.data.frame() %>% 
+                                   as.tbl()) + #  %>% 
+                                   #sample_frac(0.05)) + 
+  geom_hex(aes(x=PC1, y=PC2), col=gray(0.5), lwd=0.1) +
+  geom_segment(data=vec.sp.df,aes(x=0,xend=PC1,y=0,yend=PC2),
+      arrow = arrow(length = unit(0.1, "cm")), alpha=0.5,
+      colour=gray(0.2)) + 
+  geom_text_repel(data=vec.sp.df, aes(x=PC1, y=PC2, label=Var), size=3, segment.alpha = 1/3
+                  #position = position_dodge(width = 1) 
+                  )+
+  coord_fixed() +
+  scale_x_continuous(limits = c(-10,20), name = paste("PC1 (", expl.var[1], "%)", sep="")) + 
+  scale_y_continuous(limits = c(-10,20), name = paste("PC2 (", expl.var[2], "%)", sep="")) + 
+  scale_fill_distiller(palette = "Spectral") + 
+  theme_bw()
+
+PC.bioclim.13 <- ggplot(data= chelsa.pca$x %>% 
+                                   as.data.frame() %>% 
+                                   as.tbl())+
+  geom_hex(aes(x=PC1, y=PC3), col=gray(0.5), lwd=0.1) +
+  geom_segment(data=vec.sp.df,aes(x=0,xend=PC1,y=0,yend=PC3),
+      arrow = arrow(length = unit(0.1, "cm")), alpha=0.5,
+      colour=gray(0.2)) + 
+  geom_text_repel(data=vec.sp.df, aes(x=PC1, y=PC3, label=Var), size=3, segment.alpha=1/3
+          #position = position_dodge(width = 1) 
+          )+
+  coord_fixed() +
+  scale_x_continuous(limits = c(-10,20), name = paste("PC1 (", expl.var[1], "%)", sep="")) + 
+  scale_y_continuous(limits = c(-10,20), name = paste("PC3 (", expl.var[3], "%)", sep="")) + 
+  scale_fill_distiller(palette = "Spectral") + 
+  theme_bw()
+
+PC.climate.grid <- cowplot::plot_grid(PC.bioclim.12, PC.bioclim.13, nrow=1)
+#save
+ggsave(PC.climate.grid, filename = "../sPlot/_derived_data/Resample1/_pics/PCA_climate.png", width=10, height=5, dpi=600)
+
+PC.climate.grid
+```
+
+
+
+I interpret the PCA axes for climate as follows:  
+PC1 - BIO_01(+) Mean Ann temp  
+PC2 - BIO_12(+) Precipitation BIO_02(-) Mean Diurnal range  
+PC3 - BIO_15(+) Prec Seasonality; Bio_16(+) Prec Wettest quarter  
+PC4 - Bio_08(+) Temp Wettest Q; BIO_07(+) Temp Ann range; Bio_10(+) Temp Warmest Q  
+PC5 - BIO_19(+) Prec Coldest Q  
+  
+### 2.4.2 PCA of soil
+```{r}
+isric.world.avg <- apply(isric.world %>% 
+                            filter(complete.cases(.)), MARGIN=2, "mean")
+isric.world.sd <- apply(isric.world %>% 
+                            filter(complete.cases(.)), MARGIN=2, "sd")
+isric.pca <- prcomp(isric.world %>% 
+                            filter(complete.cases(.)), center = T, scale = T)
+summary(isric.pca)
+expl.var <- round((isric.pca$sdev^2/sum(isric.pca$sdev^2)*100), 1)
+### ENVFIT - first 4 PC explain >90% of variation
+set.seed(15)
+sa <- sample(1:nrow(isric.world %>% 
+                      filter(complete.cases(.))), 10000)
+pca.envfit <- vegan::envfit(isric.pca$x[sa,], isric.world %>% 
+                                          filter(complete.cases(.)) %>%
+                                          slice(sa),
+                     choices = c(1:4))
+print(pca.envfit)
+```
+I interpret the PCA axes for soil as follows:  
+PC1 - BLDFIE(-) Bulk density  **[TO FLIP]**
+PC2 - SNDPPT(-) Sand          **[TO FLIP]**
+PC3 - CRFVOL(+) Coarse fragments  
+PC4 - PHIHOX(+) Soil pH  
+
+Graph of PCA - soil
+```{r, fig.width=10, fig.height=5, fig.align="center", eval=F, cache=T}
+write_csv(as.data.frame(pca.envfit$vectors[[1]]), 
+          path ="../sPlot/_derived_data/Resample1/Envfit_Soil.csv")
+
+# get vectors of projected environmental variables
+vec.sp.df <- as.data.frame(pca.envfit$vectors$arrows*sqrt(pca.envfit$vectors$r)) *10
+vec.sp.df$Var <- rownames(vec.sp.df)
+
+PC.isric.12 <- ggplot(data= isric.pca$x %>% 
+                                   as.data.frame() %>% 
+                                   as.tbl())+# %>% 
+                                   #sample_frac(0.05)) + 
+  geom_hex(aes(x= -PC1, y= -PC2), col=gray(0.5), lwd=0.1) +
+  geom_segment(data=vec.sp.df,aes(x=0,xend= -PC1,y=0,yend= -PC2),
+      arrow = arrow(length = unit(0.1, "cm")), alpha=0.5,
+      colour=gray(0.2)) + 
+  geom_text_repel(data=vec.sp.df, aes(x= -PC1, y= -PC2, label=Var), size=3, segment.alpha = 1/3
+          #position = position_dodge(width = 1) 
+          )+
+  coord_fixed() +
+  scale_x_continuous(limits = c(-11,11), name = paste("PC1 (", expl.var[1], "%)", sep="")) + 
+  scale_y_continuous(limits = c(-11,11), name = paste("PC2 (", expl.var[2], "%)", sep="")) + 
+  scale_fill_distiller(palette = "Spectral") + 
+  theme_bw()
+
+
+PC.isric.13 <- ggplot(data= isric.pca$x %>% 
+                                   as.data.frame() %>% 
+                                   as.tbl())+# %>% 
+                                   #sample_frac(0.05)) + 
+  geom_hex(aes(x=-PC1, y=PC3), col=gray(0.5), lwd=0.1) +
+  geom_segment(data=vec.sp.df,aes(x=0,xend=-PC1,y=0,yend=PC3),
+      arrow = arrow(length = unit(0.1, "cm")), alpha=0.5,
+      colour=gray(0.2)) + 
+  geom_text_repel(data=vec.sp.df, aes(x=-PC1, y=PC3, label=Var), size=3, segment.alpha=1/3
+          #position = position_dodge(width = 1) 
+          )+
+  coord_fixed() +
+  scale_x_continuous(limits = c(-11,11), name = paste("PC1 (", expl.var[1], "%)", sep="")) + 
+  scale_y_continuous(limits = c(-11,11), name = paste("PC3 (", expl.var[3], "%)", sep="")) + 
+  scale_fill_distiller(palette = "Spectral") + 
+  theme_bw()
+
+PC.isric.grid <- cowplot::plot_grid(PC.isric.12, PC.isric.13, nrow=1)
+#save
+ggsave(PC.isric.grid, filename = "../sPlot/_derived_data/Resample1/_pics/PCA_isric.png", width=10, height=5, dpi=300)
+
+PC.isric.grid
+```
+  
+
+Attach PCA to world.over data.frame
+```{r}
+world.over <- world.over %>% 
+  left_join(world.over %>% 
+               dplyr::select(RAST_ID, bio_01:bio_19) %>% 
+               filter(complete.cases(.)) %>% 
+               dplyr::select(RAST_ID) %>% 
+               bind_cols(as.data.frame(chelsa.pca$x) %>% 
+                           dplyr::select(PC1:PC5) %>% 
+                           rename_all(.funs = list(~ paste0(.,"_chelsa")))), 
+                         by="RAST_ID")  %>%
+    left_join(world.over %>% 
+               dplyr::select(RAST_ID, BLDFIE:SNDPPT) %>% 
+               filter(complete.cases(.)) %>% 
+               dplyr::select(RAST_ID) %>% 
+               bind_cols(as.data.frame(isric.pca$x) %>% 
+                           dplyr::select(PC1:PC4) %>% 
+                           rename_all(.funs = list(~ paste0(.,"_isric")))), 
+                         by="RAST_ID") %>% 
+  ## FLIP PCA AXES POINTING TO NEGATIVE DIRECTIONS
+  mutate_at(.var=vars(PC1_isric, PC2_isric), 
+            .funs=list(~ -.)) %>% 
+  mutate(plants_recorded="complete") %>% 
+  mutate(interpl_dist=8500) # median of mydata
+```
+
+Save world.over
+```{r, eval=T}
+save(world.over, file="../sPlot/_derived_data/world.over.RData")
+```
+
+
+
+# 3. Predictors for selected plots
+## 3.1 Extract predictors from rasters
+Extract soil, climate, Topographic and CCVelocity for each plot in sPlot.  
+**most of the computational burden was allocated to the HPC cluster**
+```{r}
+shp.header <- header %>% 
+  filter(!is.na(POINT_X) | !is.na(POINT_Y))
+header.shp <- SpatialPointsDataFrame(coords=shp.header %>%
+                                      dplyr::select(POINT_X, POINT_Y),
+                               proj4string = crs(ecoreg), 
+                               data=data.frame(PlotID=shp.header$PlotID, 
+                                               loc.uncert=shp.header$`Location uncertainty (m)`))
+rm(shp.header)
+```
+
+
+```{r, eval=F, warning=F, message=F}
+##go parallel
+library(parallel)
+library(doParallel)
+cl <- makeCluster(5)
+registerDoParallel(cl)
+#Ancillary functions
+robust.mean <- function(x){mean(x, rm.na=T)}
+robust.mode <- function(x){if(any(x!=0)) {
+                              a <- x[which(x!=0)] #exclude zero (i.e. NAs)
+                              return(as.numeric(names(sort(table(a), decreasing=T))[1]))} else
+                                return(NA)        
+  }
+
+#Extract values from tri50km.out stack
+tri50km.out <- raster::extract(tri50km, header.shp)
+save(tri50km.out, file="../sPlot/_predictors/tri50km.out.RData")
+
+#Extract values from landform1km.maj stack
+landform1km.maj.out <- foreach(i=1:length(header.shp), .packages=c('raster'), .combine=rbind) %dopar% { 
+   landform1km.maj.tmp <- raster::extract(landform1km.maj, header.shp[i,], 
+                              buffer=min(10000,  max(250, header.shp@data$loc.uncert[i])), fun=robust.mode) }
+landform1km.maj.out <- factor(landform1km.maj.out, levels=1:10, labels=c("flat", "peak", "ridge", 
+                                                                         "shoulder", "spur", "slope",
+                                                                         "hollow", "footslope", "valley",
+                                                                         "pit"))
+save(landform1km.maj.out, file="../sPlot/_predictors/landform1km.maj.out.RData")
+
+#Extract values from landform50km.count
+landform50km.count.out <- raster::extract(landform50km.count, header.shp)
+save(landform50km.count.out, file="../sPlot/_predictors/landform50km.count.out.RData")
+
+stopCluster(cl)
+```
+
+sBiomes + match missing values to nearest sBiome [uses sBiome shapefile]
+```{r, eval=F, warning=F, message=F}
+#Extract values from sBiomes
+sbiomes.out <- raster::extract(sBiomes, header.shp)
+
+library(doParallel)
+library(parallel)
+cl <- makeCluster(8)
+registerDoParallel(cl)
+
+toassign <- header.shp[which(sbiomes.out==0),]
+nearestBiome <- foreach(i=1:length(toassign), .packages=c('raster'), .combine=rbind) %dopar% { 
+  nearestBiome.tmp <- geosphere::dist2Line(toassign[i,], sBiomes.shp)
+  return(nearestBiome.tmp)
+}
+sbiomes.out[which(sbiomes.out==0)] <- sBiomes.shp@data[nearestBiome[,"ID"],]$BiomeID
+stopCluster(cl)
+save(sbiomes.out, file="../sPlot/_predictors/sbiomes.out.RData")
+```
+
+**Soil, Climate, and CCV were processed in the HPC**
+This is an edited version of the function used to extract raster values for each plot in the HPC
+```{r }
+PredExtr <- function(x.shp, myfunction=c("robust.mean", "robust.mode"), output, x.raster, ncores){
+  myraster <- raster(x.raster)
+  load(x.shp)
+  cl <- makeForkCluster(ncores, outfile="" )
+  registerDoParallel(cl)
+  out <- foreach(i=1:length(header.shp), .packages=c('raster'), .combine=rbind) %dopar% { 
+    tmp <- raster::extract(myraster, header.shp[i,], 
+                         buffer=min(10000,  max(250, header.shp@data$loc.uncert[i])), fun=robust.mean) 
+    }
+  write.csv(out, file = output)
+}
+```
+This is the Bash loop used in HPC
+```{bash, eval=F}
+for filename in /data/project/sPlot/_data/Predictors/*.tif
+do
+  qsub submit-A98.sh $filename
+done
+```
+
+Load output from PredExtract as reimported from HPC
+```{r, message=F, warning=F}
+mycsv <- list.files("../sPlot/_predictors/", pattern="*.csv", full.names = T)
+var.names <- sapply(basename(mycsv), function(x){str_split(x, "\\.")[[1]]})[1,]
+# Import all otuputs and rename columns
+myimport <- mycsv %>% 
+  map_dfc(~read_csv(.) %>% 
+            dplyr::select(-X1)) %>% 
+  set_names(var.names) %>% 
+  rename_at(.vars=vars(starts_with("CHELSA")), 
+              .funs=~stringr::str_sub(., -8,-1)) %>% 
+  rename_at(.vars=vars(starts_with("bio10_")),
+            .funs=~gsub(pattern="bio10_", replacement="bio_", x=.)) %>% 
+  rename_at(.vars=vars(starts_with("LGM_")),
+            .funs=~gsub(pattern="LGM_", replacement="CCV", x=.)) %>% 
+  rename_all(.funs = list(~stringr::str_sub(., 1, 6))) %>% 
+  dplyr::select(order(colnames(.))) %>% 
+  dplyr::select(bio_01:bio_19, BLDFIE, CECSOL:SNDPPT, CCVPre, CCVTem)
+```
+
+## 3.2 Extract predictors from vectors
+Assign to ecoregions 
+```{r, cache=T, eval=F}
+#Ecoregions
+ecoreg.out <- sp::over(x=header.shp, y=ecoreg) # ~5 mins
+               
+#assign to WorldGrasslandMaps
+## Not needed 
+#tmp <- spTransform(header.shp, CRSobj = crs(WGT))
+#isgrassland.tmp <- sp::over(tmp, WGT)
+#isgrassland <- !is.na(isgrassland.tmp$ECO_NAME)
+#rm(tmp)
+```
+Match missing values to nearest ecoregion  
+
+```{r, warning=F, message=F, eval=F}
+#(long computing time! - performed in HPC and reassembled below)
+library(doParallel)
+library(parallel)
+cl <- makeCluster(8)
+registerDoParallel(cl)
+
+
+mypoints <- header.shp[which(is.na(ecoreg.out$ECO_NAME)),]
+mypredictor <- ecoreg
+indices <- 1:length(mypoints)
+chunks <- split(indices, sort(indices%%99))
+
+chunkn <- 93
+nearestEcoreg <- foreach(i=chunks[[chunkn]], .packages=c('raster'), .combine=rbind) %dopar% { 
+  data.frame(mypoints[i,"PlotID"], distance=NA, lon=NA, lat=NA,ID=NA)
+  nearestEcoreg.tmp <- tryCatch(data.frame(mypoints[i,"PlotID"],
+                                                  geosphere::dist2Line(mypoints[i,], mypredictor)),
+               error = function(e){data.frame(mypoints[i,"PlotID"], distance=NA, lon=NA, lat=NA,ID=NA)}
+      )
+  return(nearestEcoreg.tmp)
+}
+#~3000 out of 27000 plots are still not classified
+write.csv(nearestEcoreg, file = paste("../sPlot/_predictors/Ecoregion_tmp/EcoregionExtract-", chunkn, ".csv", sep=""))
+```
+Reassamble output of Ecoregion from HPC
+```{r, message=F, warning=F, eval=F}
+listf <- list.files(path="../sPlot/_predictors/Ecoregion_tmp/", pattern="*.csv", full.names = T)
+eco0 <- do.call("rbind", lapply(listf, FUN = function(file) {
+  readr::read_csv(file)
+})) 
+
+ecoreg.out <- ecoreg.out %>% 
+  as.tbl() %>% 
+  mutate(PlotID=header.shp@data$PlotID) %>% 
+  left_join(eco0 %>% 
+              #dplyr::select(PlotID) %>% 
+              bind_cols(ecoreg@data[eco0$ID,]), 
+            by="PlotID") %>% 
+  mutate(OBJECTID.x=ifelse(is.na(OBJECTID.y), OBJECTID.x, OBJECTID.y)) %>% 
+  mutate(ECO_NAME.x=ifelse(is.na(ECO_NAME.y), ECO_NAME.x, ECO_NAME.y)) %>% 
+  mutate(REALM.x=ifelse(is.na(REALM.y), REALM.x, REALM.y)) %>% 
+  mutate(BIOME.x=ifelse(is.na(BIOME.y), BIOME.x, BIOME.y)) %>% 
+  mutate(ECO_NUM.x=ifelse(is.na(ECO_NUM.y), ECO_NUM.x, ECO_NUM.y)) %>% 
+  mutate(ECO_ID.x=ifelse(is.na(ECO_ID.y), ECO_ID.x, ECO_ID.y)) %>% 
+  mutate(eco_code.x=ifelse(is.na(eco_code.y), eco_code.x, eco_code.y)) %>% 
+  dplyr::select(-ends_with(".y")) %>% 
+  rename_at(.vars=vars(ends_with(".x")), 
+            .funs=list(~gsub(pattern=".x", replacement = "", x=.))) %>% 
+  dplyr::select(OBJECTID:eco_code)
+save(ecoreg.out, file = "../sPlot/_predictors/ecoreg.out.RData")
+```
+
+
+
+
+Assign plots to continent  
+**REQUIRES some heavy computation**
+```{r, eval=F}
+continent.out <- sp::over(x=header.shp, y=continent)
+#correct unassigned points to closest continent
+toassign <- header.shp[which(is.na(continent.out$continent)),]
+crs(toassign) <- crs(continent)
+#go parallel
+cl <- makeCluster(8)
+registerDoParallel(cl)
+nearestContinent <- foreach(i=1:length(toassign), .packages=c('raster'), .combine=rbind) %dopar% { 
+  nearestContinent.tmp <- geosphere::dist2Line(toassign[i,], continent_clipped)
+}
+continent.out$continent[which(is.na(continent.out$continent))] <- as.character(continent[-137,]@data[nearestContinent[,"ID"],])
+save(continent.out, file = "../sPlot/_derived_data/continent.out")
+```
+Reload and manipulate continent 
+```{r}
+load("../sPlot/_derived_data/continent.out")
+continent.out <- continent.out %>% 
+  mutate(CONTINENT=factor(continent, 
+                            levels=c("Africa", "Antarctica", "Australia", "Eurasia", "North America", "South America"),
+                            labels=c("AF", "AN", "AU", "EU", "NA", "SA"))) %>% 
+  dplyr::select(CONTINENT)
+
+```
+
+## 3.3 Build data.frame of predictors
+Build data.frame of predictors for each plot, joining predictors from rasters and vectors.  
+Reload predictors extracted from rasters (PCA - climate and soil; Topography, CCV)
+```{r}
+load("../sPlot/_predictors/sbiomes.out.RData")
+load("../sPlot/_predictors/tri50km.out.RData")
+load("../sPlot/_predictors/landform1km.maj.out.RData")
+load("../sPlot/_predictors/landform50km.count.out.RData")
+load("../sPlot/_predictors/ecoreg.out.RData")
+#load("../sPlot/_predictors/fra.out.RData")
+#load("../sPlot/_predictors/WRI.for.out.RData")
+```
+Create data.frame of predictors, add predictors from rasters
+```{r}
+mydata.over <-  header.shp@data %>%
+  as.tbl() %>% 
+  bind_cols(as.data.frame(header.shp@coords)) %>%
+  bind_cols(myimport) %>% 
+  mutate(tri50km=tri50km.out) %>% 
+  mutate(landform1km.maj=landform1km.maj.out) %>%
+  mutate(landform50km.count=landform50km.count.out) %>% 
+  bind_cols(data.frame(sBiomeID=sbiomes.out) %>%
+              left_join(sBiomes.labels %>% 
+                          dplyr::select(BiomeID, Name) %>%
+                          rename(sBiomeID=BiomeID, sBiomeName=Name),
+                        by="sBiomeID"))
+```
+Add predictors from vectors
+```{r, message=F, warning=F}
+mydata.over <- mydata.over %>% 
+  bind_cols(ecoreg.out %>% 
+              dplyr::select(ECO_NAME, eco_code, REALM)) %>% 
+  left_join(EcoRichness %>%
+              dplyr::select(eco_id2, sp_wfig) %>%
+              dplyr::rename(eco_code=eco_id2), by="eco_code") %>% 
+  bind_cols(continent.out)
+```
+Fix header
+```{r}
+source("A96_fixheaderPaper11.R")
+header <- fix.header11(header)
+## Add GIVD codes
+databases <- fread("/data/sPlot/users/Francesco/_sPlot_Management/Consortium/Databases.out.csv")
+header <- header %>%
+ rename(plants_recorded=plants_recorded2) %>% 
+ mutate(Dataset=replace(Dataset, list=Dataset %in% c("Argentina_Chaco_Espinal","Argentina_Cordoba"), 
+                      "Argentina_Central")) %>%
+ left_join(databases %>% 
+             dplyr::rename(Dataset=`label`) %>% 
+             dplyr::select(`GIVD ID`, Dataset), by="Dataset")
+## filter out plots not qualifying for this study
+mydata.over <- mydata.over %>% 
+  filter(PlotID %in% (header %>% 
+                        pull(PlotID)))
+#check
+nrow(mydata.over)==nrow(header)
+```
+
+
+
+## 3.4 Project points in PCA space
+
+```{r}
+#Climate
+standardized.chelsa <- t(as.matrix( (t(mydata.over %>% 
+                                        dplyr::select(bio_01:bio_19)) - chelsa.world.avg) / chelsa.world.sd))
+projected.chelsa <- as.data.frame(standardized.chelsa %*% as.matrix(chelsa.pca$rotation))
+
+#Soil
+standardized.isric <- t(as.matrix( (t(mydata.over %>% 
+                                        dplyr::select(BLDFIE:SNDPPT)) - isric.world.avg) / isric.world.sd))
+projected.isric <- as.data.frame(standardized.isric %*% as.matrix(isric.pca$rotation))
+```
+
+Add projected PCA values to mydata.over
+```{r}
+#Merge to mydata.over object
+mydata.over <- mydata.over %>% 
+  bind_cols(as.data.frame(projected.chelsa) %>% 
+              dplyr::select(PC1:PC5) %>% 
+              rename_all(.funs = list(~ paste0(.,"_chelsa")))) %>% 
+  bind_cols(as.data.frame(projected.isric) %>% 
+              dplyr::select(PC1:PC4) %>% 
+              rename_all(.funs = list(~ paste0(.,"_isric"))))
+            
+#save(mydata.over, file="../sPlot/_derived_data/mydata.over.RData")
+```
+
+
+# 4. Response variable
+
+Read in results of species pool, recompose output, bind predictors, and export
+```{r, warning=F, message=F}
+
+load(file = "../sPlot/_derived_data/DT2_20161025_filtered2.RData")
+
+## ## calculate species richness of all plants, trees+shrubs, trees only for all plots with plot.size & position info.
+all.plots <- header %>% 
+  filter(!is.na(POINT_X)) %>% 
+  filter(!is.na(`Relevé area (m²)`) & `Relevé area (m²)`>0) %>% 
+  filter(fornonfor!="out") %>% 
+  pull(PlotObservationID)
+
+mydata <- DT2 %>% 
+  filter(PlotObservationID %in% all.plots) %>% 
+  group_by(PlotObservationID) %>% 
+  distinct(species, .keep_all = T) %>% 
+  summarize(rich.complete = n(), 
+            rich.woody_all = sum( is.na(is.shrub) | is.shrub | is.tree.or.tall | is.na(is.tree.or.tall)), 
+            rich.woody_large = sum( is.na(is.tree.or.tall) | is.tree.or.tall)) %>% 
+  left_join(header %>% 
+              dplyr::select(PlotObservationID, GIVD_ID=`GIVD ID`, Country, 
+                            fornonfor, is.forest, is.non.forest, 
+                            Rel.area=`Relevé area (m²)`, plants_recorded,
+                            POINT_X, POINT_Y, `Location uncertainty (m)`),
+            by="PlotObservationID") %>%
+  mutate(isforest=ifelse(fornonfor=="for", T, F)) %>% 
+  mutate(plants_recorded=as.factor(plants_recorded)) %>% 
+  dplyr::select(-fornonfor) %>% 
+  mutate(GIVD_ID=factor(GIVD_ID)) %>% 
+  left_join(mydata.over %>% 
+              dplyr::select(-loc.uncert, -POINT_X, -POINT_Y),
+            by=c("PlotObservationID"="PlotID")) %>% 
+  rename(RELEVE_NR=PlotObservationID) %>% 
+  mutate(sBiomeName=factor(sBiomeName)) %>% 
+  relocate(starts_with("rich"), .after = last_col()) %>% 
+  ## correcte species richness, when not complete
+  mutate(rich.woody_all=ifelse(plants_recorded=="woody_all", rich.complete, rich.woody_all)) %>% 
+  mutate(rich.woody_large=ifelse(plants_recorded=="woody_large", rich.complete, rich.woody_large)) 
+
+  
+save(mydata, file="../sPlot/_derived_data/Resample1/Mydata_global.RData")
+
+```
+
+## 4.1 Explore Correlations
+
+```{r}
+load(file="../sPlot/_derived_data/Resample1/Mydata_global.RData")
+
+selected.predictors <- c("PC1_chelsa", "PC2_chelsa", "PC3_chelsa", "PC4_chelsa", "PC5_chelsa",
+                         "PC1_isric", "PC2_isric", "PC3_isric", "PC4_isric", 
+                         "CCVPre", "CCVTem", 
+                         "tri50km", "landform1km.maj", "landform50km.count", 
+                         "sBiomeName", 
+                         "sp_wfig",  "REALM", "isforest", "plants_recorded", "Rel.area")
+
+var.labs0 <- c("Climate PC1 - Annual mean temperature",
+                   "Climate PC2 - Precipitation",
+                   "Climate PC3 - Precipitation seasonality",
+                   "Climate PC4 - Temp. warmest/wettest q.",
+                   "Climate PC5 - Precip. coldest quarter",
+                   "Soil PC1 - Bulk density", 
+                   "Soil PC2 - Sand %", 
+                   "Soil PC3 - Coarse fragments %", 
+                   "Soil PC4 - pH",
+                   "Climate Change Velocity - Precipitation", 
+                   "Climate Change Velocity - Temperature", 
+                   "Terrain Ruggedeness Index", 
+                   "Dominant landform", 
+                   "Number of landforms (50km)",
+                   "Biome", 
+                   "Ecoregion species pool", 
+                   "Realm", "Forest", "Plants recorded", "Plot size")
+
+my.rename = c(var.labs0 = selected.predictors)
+names(my.rename) <- var.labs0
+
+
+
+mydata.dist <- mydata %>% 
+  #distinct(PlotID, .keep_all=T) %0>% 
+  dplyr::select(any_of(selected.predictors)) %>% 
+  rename(!!!my.rename) %>% 
+  dplyr::select_if(.predicate = ~is.numeric(.)) %>% 
+  filter(complete.cases(.)) %>% 
+  sample_frac(0.20) 
+
+library(corrplot)
+res <- cor(mydata.dist)
+corrplot(res, type = "upper", 
+         tl.col = "black", tl.srt = 45, number.cex=0.6, addCoef.col = "black",)
+
+## save graph
+png(file="../sPlot/_derived_data/Resample1/_pics/FigS5_Correlations.png", width=10, height=7.2, units = "in", res=300)
+corrplot(res, type = "upper", 
+         tl.col = "black", tl.srt = 45, number.cex=0.6, addCoef.col = "black", tl.cex = 0.7)
+dev.off()
+```
+
+
