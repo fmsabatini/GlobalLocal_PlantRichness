@@ -23,12 +23,12 @@ source("https://gist.githubusercontent.com/benmarwick/2a1bb0133ff568cbe28d/raw/f
 
 
 ### Set paths
-path.to.pics <- "../sPlot/_versions/NatCommR1/_pics"
-path.to.BRTglobal <- "../sPlot/_versions/NatCommR1/BRTglobal"
-path.to.world.predictions <- "../sPlot/_versions/NatCommR1/_world_predictions"
-path.to.output <- "../sPlot/_versions/NatCommR1"
+path.to.pics <- "../sPlot/_versions/NatCommR2/_pics"
+path.to.BRTglobal <- "../sPlot/_versions/NatCommR2/BRTglobal"
+path.to.world.predictions <- "../sPlot/_versions/NatCommR2/_world_predictions"
+path.to.output <- "../sPlot/_versions/NatCommR2"
 path.to.input <- "../sPlot/_input"
-path.to.CValidation <- "../sPlot/_versions/NatCommR1/CValidation/"
+path.to.CValidation <- "../sPlot/_versions/NatCommR2/CValidation/"
 
 ### Ancillary functions ####
 ## extract and bind all BRT predictions into the same object
@@ -115,7 +115,7 @@ var.labs0=c("ClimPC1 - Annual T","ClimPC2 - Prec","ClimPC3 - P Season",
 load(file.path(path.to.input, "world.over.RData"))
 
 # load and adjust mydata
-load(file.path(path.to.input, "Mydata_global_NatCommR1.RData"))
+load(file.path(path.to.input, "Mydata_global_NatCommR2.RData"))
 mydata <- mydata %>%
   mutate(isforest=ifelse(isforest, "for", "nonfor")) %>%
   mutate(isforest=factor(isforest)) %>% 
@@ -857,8 +857,18 @@ size <- 10
 order.i <- as.numeric(gsub(pattern=paste0("_",size,"m\\.RData"), replacement="", 
                            x=str_extract(listf, pattern="[0-9]*_[0-9]*m\\.RData$")))
 listf <- listf[order(order.i)]
+i <- 1
+load(listf[i])
+mydata.i.sp <- mydata %>% 
+  filter(RELEVE_NR %in% rel.list[[i]]) %>% 
+  mutate(res=residuals(modello))
+coordinates(mydata.i.sp) <- ~POINT_X+POINT_Y
+crs(mydata.i.sp) <-  CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")
+## !! Projection in KM!!
+mydata.i.sp <- spTransform(mydata.i.sp, CRSobj = "+proj=eck4 +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=km +no_defs" ) 
 
-myboundaries <- c(30, 50, 100, 250, 500, 750, 1500, 2000, 3000)
+
+myboundaries <- c(50, 100, 250, 500, 750, 1500, 2000, 3000)
 vg <- gstat::variogram(res~1, mydata.i.sp, boundaries=myboundaries)
 ggplot(data=vg, aes(x=dist, y=gamma)) + 
   geom_point() + 

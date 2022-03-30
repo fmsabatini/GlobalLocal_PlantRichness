@@ -24,7 +24,7 @@ Rscript \
     --fornonf "$fornonf" \
     --nrows 99 \
     --index "$SLURM_ARRAY_TASK_ID" \
-    /data/splot/_data/Mydata_global_NatCommR1.RData \
+    /data/splot/_data/Mydata_global_NatCommR2.RData \
     /data/splot/_data/world.over.RData \
     "$output" 
 

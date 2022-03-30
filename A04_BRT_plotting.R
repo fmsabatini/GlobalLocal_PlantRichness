@@ -21,13 +21,13 @@ library(cowplot)
 library(furrr)
 library(patchwork)
 source("A20_AncillaryFunctions.R")
-
+source("A21_w3a_TemplateEckert.R") ## import map template
 
 ### Set paths
-path.to.pics <- "../sPlot/_versions/NatCommR1/_pics"
-path.to.BRTglobal <- "../sPlot/_versions/NatCommR1/BRTglobal"
-path.to.world.predictions <- "../sPlot/_versions/NatCommR1/_world_predictions"
-path.to.output <- "../sPlot/_versions/NatCommR1"
+path.to.pics <- "../sPlot/_versions/NatCommR2/_pics"
+path.to.BRTglobal <- "../sPlot/_versions/NatCommR2/BRTglobal"
+path.to.world.predictions <- "../sPlot/_versions/NatCommR2/_world_predictions"
+path.to.output <- "../sPlot/_versions/NatCommR2"
 path.to.input <- "../sPlot/_input"
 
 ##### Ancillary functions ####
@@ -150,7 +150,7 @@ index.list$Var3 <- factor(index.list$Var1, labels=c(10, 100, 400, 1000, 10000))
 
 require(parallel)
 require(doParallel)
-cl <- makeCluster(5, outfile="mylog.log")
+cl <- makeForkCluster(5, outfile="mylog.log")
 registerDoParallel(cl)
 
 clusterEvalQ(cl, {
@@ -240,30 +240,21 @@ stopCluster(cl)
 
 
 #### Step 2 - BRT predicting #### 
-#### alternative plotting
-#### downloaded from NaturalEarth
-# Load template of Eckert IV global map
-source("A21_w3a_TemplateEckert.R")
-
 #### Maps of sp richness at different scales & species pool size - Forest vs nonforest  ####
+
 vegtypes <- c("for", "nonfor")
 index.list.all <- expand.grid(all.metrics, vegtypes, "all" )
 index.list.for <- expand.grid(all.metrics, "for", "for")
 index.list.nonfor <- expand.grid(all.metrics, "nonfor", "nonfor")
 index.list <-rbind(index.list.all, index.list.for,index.list.nonfor)
 save <- F
-
 which.summary.metric <- "median"
 which.summary.metric.lab <- ifelse(which.summary.metric!="median", which.summary.metric, "")
 
-#require(parallel)
-#require(doParallel)
-#cl <- makeForkCluster(5, outfile="" )
-#registerDoParallel(cl)
 
 ## crashes if run as a loop. works one by one
 ## (Probably for lack of memory)
-save.raster <- F
+save.raster <- T
 for(index in 1:20)
   {
   metric <- index.list$Var1[index]
@@ -338,7 +329,8 @@ for(index in 1:20)
     })
     #w3
     assign(paste("w3", metric, fornonf, sep="."), w3)
-    save(list=paste("w3", metric, fornonf, sep="."), file=paste(paste0(file.path(path.to.input, "/NatCommR1/_pics/"),which.model,"/w3"), metric, fornonf, which.summary.metric.lab, "RData", sep="."))
+    save(list=paste("w3", metric, fornonf, sep="."), 
+         file=paste(paste(path.to.pics,which.model,"w3", sep="/"), metric, fornonf, which.summary.metric.lab, "RData", sep="."))
     
   ### W3 - Sp. Richness - same as above but with geom_tile instead of hexagons
     world.data3 <- world.data2 %>% 
@@ -593,7 +585,7 @@ for(index in 1:20)
   ### W5 - Map of ignorance 
     ## calculate only once per fornonf, as they are identical across metrics
     if(metric==all.metrics[1]){
-      load(file.path(path.to.input, "/Mydata_global_NatCommR1.RData"))
+      load(file.path(path.to.input, "/Mydata_global_NatCommR2.RData"))
     
     if(fornonf=="for"){
       mydata.ign <- bind_rows(world.data2 %>% 
@@ -740,7 +732,8 @@ for(index in 1:20)
       st_as_sf() %>% 
       st_cast("MULTIPOLYGON")
       
-    save(mydata.ign, pp.sf, file=paste0(file.path(path.to.input, "/NatCommR1/_pics/ignorance_"), which.model, "_", fornonf, ".RData"))
+    save(mydata.ign, pp.sf, 
+         file=paste0(file.path(path.to.pics, "ignorance_"), which.model, "_", fornonf, ".RData"))
     
     assign(paste("w5", metric, fornonf, sep="."), w5)
     save(list=paste("w5", metric, fornonf, sep="."), 
@@ -760,7 +753,7 @@ for(index in 1:20)
     save(gglist, file = paste(file.path(path.to.pics, "gglist"), metric, fornonf, "RData", sep="."))
   }
     #return(gglist)
-}
+} ; index <- 3
 
 #stopCluster(cl)
 
@@ -768,7 +761,10 @@ for(index in 1:20)
 #####  RELOAD GROBS for FIGURES #####
 which.model <- "all"
 index.list0 <- index.list %>% 
-  filter(Var3==which.model)
+  filter(Var3==which.model) %>% 
+  # to redue amount of memory needed
+  filter(  (Var2 == "for" & Var1 %in% c("sr10", "sr400", "sr1000", "sr1ha")) | 
+             (Var2=="nonfor"  & Var1 %in% c("sr10", "sr100" , "sr1000")))
 for(i in 1:nrow(index.list0)){
   metric <- index.list0$Var1[i]
   fornonf <- index.list0$Var2[i]
@@ -785,9 +781,13 @@ for(i in 1:nrow(index.list0)){
 load(file=paste0(file.path(path.to.pics, "ignorance_"),which.model,"_for.RData"))
 stripes.for <- geom_sf_pattern(data=pp.sf, pattern="stripe", pattern_fill="black", pattern_colour=NA, 
                                fill=NA,colour=NA,pattern_density=0.15,pattern_spacing=0.01)
+gray.for <- geom_sf(data=pp.sf, fill="grey90",colour=NA) ## NatComm R2
+
 load(file=paste0(file.path(path.to.pics, "ignorance_"),which.model,"_nonfor.RData"))
 stripes.nonfor <- geom_sf_pattern(data=pp.sf, pattern="stripe", pattern_fill="black", pattern_colour=NA, 
                                   fill=NA,colour=NA,pattern_density=0.15,pattern_spacing=0.01)
+gray.nonfor <- geom_sf(data=pp.sf, fill="grey90",colour=NA) ## NatComm R2
+
 
 ## New version of plots - 08.05.2020
 ### Figure 1 Compare scales - Forests ####
@@ -854,6 +854,43 @@ if(which.model %in% c("all", "nonfor")){
   }
 }
 
+### NatComms R2 - Replace patterns with gray ####
+## Figure 1R2 Compare scales - Forests
+if(which.model %in% c("all", "for")){
+    leftside <- plot_grid(w3_tile.sr400.for + gray.for + stripes.for, #+  scale_color_viridis(guide = FALSE) + scale_fill_viridis(), 
+                          w3_tile.sr1000.for+ gray.for + stripes.for, #+ scale_color_viridis(guide = FALSE) + scale_fill_viridis(),  
+                          w3_tile.sr1ha.for + gray.for + stripes.for, #+ scale_color_viridis(guide = FALSE) + scale_fill_viridis(),  
+                          ncol=1, labels=c("A","B", "C"))#, "D", "E")) #w3.Asym.gomp.for, 
+    central <- plot_grid(w3minmax_tile.sr400.for+ gray.for + stripes.for, 
+                         w3minmax_tile.sr1000.for+gray.for + stripes.for, 
+                         w3minmax_tile.sr1ha.for+ gray.for + stripes.for,  ncol=1) #w3minmax.Asym.gomp.for,
+    
+    Fig1R2 <- plot_grid(leftside,  central,ncol=2) #rightside, 
+    ggsave(filename=paste0(path.to.pics, "/", which.model, "/Fig1R2_for_tile", which.summary.metric.lab, ".png"), Fig1R2, 
+           height=10, width=12, unit="in", dpi=600, bg="white")
+    ggsave(filename=paste0(path.to.pics, "/", which.model, "/Fig1R2_for_tile", which.summary.metric.lab, ".pdf"), Fig1R2, 
+           height=10, width=12, unit="in", bg="white")
+}
+rm(leftside, central, Fig1R2)
+
+### Figure 2 Compare scales - NonForests 
+if(which.model %in% c("all", "nonfor")){
+    leftside <- plot_grid(w3_tile.sr10.nonfor + gray.nonfor + stripes.nonfor, 
+                           w3_tile.sr100.nonfor+ gray.nonfor + stripes.nonfor, 
+                           w3_tile.sr1000.nonfor+gray.nonfor + stripes.nonfor, ncol=1, labels=c("A","B", "C"))#, "d", "e")) #w3.Asym.gomp.for, 
+    central <- plot_grid(w3minmax_tile.sr10.nonfor+  gray.nonfor+ stripes.nonfor, 
+                          w3minmax_tile.sr100.nonfor+ gray.nonfor+ stripes.nonfor, 
+                          w3minmax_tile.sr1000.nonfor+gray.nonfor+ stripes.nonfor,  ncol=1) #w3minmax.Asym.gomp.for,
+    
+    Fig2R2 <- plot_grid(leftside, central,  ncol=2) 
+    ggsave(filename=paste0(path.to.pics,"/",  which.model, "/Fig2R2_nonfor_tile", which.summary.metric.lab, ".png"), 
+           Fig2R2, height=10, width=12, unit="in", dpi=600, bg="white")
+    ggsave(filename=paste0(path.to.pics, "/", which.model, "/Fig2R2_nonfor_tile", which.summary.metric.lab, ".pdf"), 
+           Fig2R2, height=10, width=12, unit="in", bg="white")
+}
+
+
+
 #### Figure S2 IQR - forest vs non Forest ####
 ### only intermediate grain
 {
@@ -871,10 +908,13 @@ rightside.s2b <- w4.sr100.nonfor +
 
 if(which.model=="all"){
   FigS2 <- plot_grid(leftside.s2b, 
-                     rightside.s2b,  
+                     rightside.s2b + 
+                       ## add color limits to avoid effect of outlier (R2)
+                       scale_fill_viridis(option="plasma", limits=c(12,98)) ,  
                      nrow=2, labels = c("A","B")) #rightside2,
   ggsave(filename=paste0(path.to.pics, "/", which.model, "/FigS2b_IQRs", which.summary.metric.lab,".png"), 
-         FigS2, height=9, width=8, unit="in", dpi=600, bg="white")}
+         FigS2, height=9, width=8, unit="in", dpi=600, bg="white")
+  }
 
 }
 
@@ -1096,8 +1136,8 @@ summary.for <- summary.biome %>%
             #(fornonf=="nonfor" & grain %in% c("sr10", "sr100", "sr1000"))) %>% 
   pivot_longer(names_to = "stat", cols = min:IQR) %>% 
   mutate(value=round(value)) %>% 
-  pivot_wider(names_from = grain:stat, 
-    id_cols = sBiomeName:stat)
+  pivot_wider(names_from = grain:stat)#, 
+    #id_cols = sBiomeName:stat)
 
 summary.nonfor <- summary.biome %>% 
   bind_rows(summary.global %>% 
@@ -1106,11 +1146,11 @@ summary.nonfor <- summary.biome %>%
   filter(fornonf=="nonfor" & grain %in% c("sr10", "sr100", "sr1000")) %>% 
   pivot_longer(names_to = "stat", cols = min:IQR) %>% 
   mutate(value=round(value,1)) %>% 
-  pivot_wider(names_from = grain:stat, 
-              id_cols = sBiomeName:stat)
+  pivot_wider(names_from = grain:stat)#, 
+              #id_cols = sBiomeName:stat)
 
-write_csv(x = summary.for, path=path.file(path.to.output, "Summary.for.csv"))
-write_csv(x = summary.nonfor, path=path.file(path.to.output, "Summary.nonfor.csv"))
+write_csv(x = summary.for, path=file.path(path.to.output, "Summary.for.csv"))
+write_csv(x = summary.nonfor, path=file.path(path.to.output, "Summary.nonfor.csv"))
 
 
 
@@ -1378,21 +1418,35 @@ mypalette <- c("#000000", #black
                "#e6ab02", #dark yellow
                "#91bfdb")
 
+
+#plotranges <- mydata %>% 
+#  dplyr::select(isforest, Rel.area, all_of(impp.m$var)) %>% 
+#  pivot_longer(Rel.area:sp_wfig, values_to="x", names_to="var") %>% 
+#  group_by(isforest, var) %>% 
+#  summarize(q05=quantile(x, 0.0001, na.rm=T),
+#            q95=quantile(x, 0.9999, na.rm=T)) %>% 
+#  mutate(which.model=which.model) %>% 
+#  mutate(isforest=as.factor(ifelse(isforest, "For", "Non-For"))) %>% 
+#  mutate(var=factor(var, levels=impp.m$var, 
+#                    labels=impp.m$var.labs))
+  
+
 pdp.df <- pdp.df0 %>% 
   replace_na(list(Rel.area=-999)) %>% 
   mutate(var=factor(var, levels=impp.m$var, 
                     labels=impp.m$var.labs)) %>% 
+  #filter(!is.na(var)) %>% 
   arrange(which.model, iter, Rel.area, isforest, var, x) %>% 
   left_join({.} %>% 
               filter(type=="numeric") %>% 
-              filter(var!="Relevé area") %>% 
+              filter(var!="Plot size (m²)") %>% 
               group_by(which.model, iter, Rel.area, isforest, var) %>% 
               summarize(q05=quantile(as.numeric(x), 0.05),
                         q95=quantile(as.numeric(x), 0.95)), 
-            by=c("which.model", "iter", "Rel.area", "isforest", "var")) %>% 
-  filter( var != "Relevé area" | 
-            (isforest=="For" & var=="Relevé area" & as.numeric(x)>95 & as.numeric(x)<10100) |
-            (isforest=="Non-For" & var=="Relevé area" & as.numeric(x)>7 & as.numeric(x) <1010)) %>% 
+            by=c("which.model", "iter", "Rel.area", "isforest", "var")) %>%
+  filter( var != "Plot size (m²)" | 
+             (isforest=="For" & var=="Plot size (m²)" & as.numeric(x)>95 & as.numeric(x)<25100) |
+            (isforest=="Non-For" & var=="Plot size (m²)" & as.numeric(x)>7 & as.numeric(x) <1010)) %>% 
   mutate(grain.lab="none") %>% 
   mutate(grain.lab=ifelse( (isforest=="For" & Rel.area==400) | 
                              (isforest=="Non-For" & Rel.area==10), "Fine", grain.lab)) %>% 
@@ -1406,7 +1460,7 @@ pdp.df <- pdp.df0 %>%
 
 
 
-nvars <- 4
+nvars <- length(impp.m$var)
 pdp.gg <- list()
 tick <- 1
 for(ff in 1:2){
@@ -1424,7 +1478,12 @@ for(ff in 1:2){
       filter(isforest==f & Rel.area %in% area.filter)  %>% 
       filter(var %in% impp.m$var.labs[v]) %>% 
       mutate(x=as.numeric(x)) %>% 
-      filter(!is.na(x) | (x>q05 & x<q95))
+      filter(!is.na(x)) 
+    
+    if(impp.m$var.labs[v] != "Plot size (m²)") {
+      tmp.data <- tmp.data %>% 
+        filter((x>q05 & x<q95))
+    }
     
     rug.data <- mydata %>% 
       filter(isforest== (f=="For")) %>% 
@@ -1434,10 +1493,10 @@ for(ff in 1:2){
       #sample_frac(0.25)
     
     mylim <- range(tmp.data$x)*c(1,1.03)
-   if(impp.m$var.labs[v]=="Plot size" & f=="Non-For"){
+   if(impp.m$var.labs[v]=="Plot size (m²)" & f=="Non-For"){
       mylim <- c(0, 1010)
    }
-    if(impp.m$var.labs[v]=="Plot size" & f=="For"){
+    if(impp.m$var.labs[v]=="Plot size (m²)" & f=="For"){
       mylim <- c(0, 25010)
     }
 
@@ -1450,7 +1509,7 @@ for(ff in 1:2){
         geom_rug(data=rug.data, aes(x=x, y=y), alpha=1/5, sides="b") +
         scale_color_identity() +
         theme_bw() + 
-        scale_y_continuous(limits= c(-1, 1.5), breaks = NULL, labels = NULL, name=NULL)  +
+        scale_y_continuous(limits= c(-1, 1.6), breaks = NULL, labels = NULL, name=NULL)  +
         scale_x_continuous(limits = mylim, breaks = scales::pretty_breaks(n = 3), name=NULL) + 
         theme(axis.title.x = element_text(margin = margin(t = 12, r = 0, b = 0, l = 0)), 
               axis.title = element_text(size=9),
@@ -1525,7 +1584,7 @@ pdp.panel <- plot_grid(
   ncol=3, rel_widths = c(0.04, 0.92, 0.04))
 
 
-ggsave(paste0(file.path(path.to.pics, which.model), "/Fig4b_pdp_new_", nvars, "vars_horiz.png"), 
+ggsave(paste0(file.path(path.to.pics, which.model), "/Fig4b_pdp_new_", nvars, "vars_horiz2.png"), 
        width = 9, height = 5, dpi=600, pdp.panel,bg = "white")
 ggsave(paste0(file.path(path.to.pics, which.model), "/Fig4b_pdp_new_", nvars, "vars_horiz.pdf"), 
        width = 9, height = 5, pdp.panel, bg = "white")

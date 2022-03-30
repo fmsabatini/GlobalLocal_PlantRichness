@@ -11,21 +11,21 @@ library(cowplot)
 source("A21_w3a_TemplateEckert.R")
 
 ### Set paths
-path.to.pics <- "../sPlot/_versions/NatCommR1/_pics"
-path.to.output <- "../sPlot/_versions/NatCommR1"
+path.to.pics <- "../sPlot/_versions/NatCommR2/_pics"
+path.to.output <- "../sPlot/_versions/NatCommR2"
 path.to.input <- "../sPlot/_input"
 
 
 
 # load mydata
-load(file.path(path.to.input, "Mydata_global_NatCommR1.RData"))
+load(file.path(path.to.input, "Mydata_global_NatCommR2.RData"))
 mydata <- mydata %>%
   #mutate(isforest=as.numeric(isforest)) %>% ##classification based on land cover
   mutate(isforest=ifelse(isforest, "for", "nonfor")) %>%
   mutate(isforest=factor(isforest)) %>% 
   mutate(CONTINENT=factor(CONTINENT))
 
-# 417180 pre-seltected plots 
+# 412452 pre-seltected plots 
 
 ### Relevées used in each iteration for BRTs
 nrows <- 99
@@ -42,7 +42,7 @@ rel.list <- lapply(1:nrows, function(x){mydata %>%
     pull(RELEVE_NR)})
 
 length(unique(unlist(rel.list))) #
-'[1] 170700' # total number of plots effectively used
+'[1] 170272' # total number of plots effectively used
 
 ## calculate leverage of plots
 res <- data.frame(RELEVE_NR=unlist(rel.list)) %>% 
@@ -51,20 +51,35 @@ res <- data.frame(RELEVE_NR=unlist(rel.list)) %>%
 
 
 ### Fig S6 - No. of plots per grain across biomes ######
-biome.order <- c('Polar and subpolar zone' ,'Alpine' ,'Boreal zone' ,'Temperate midlatitudes' ,
-                 'Dry midlatitudes' ,'Dry tropics and subtropics' ,'Subtrop. with year-round rain' ,
-                 'Subtropics with winter rain' ,'Tropics with summer rain' ,'Tropics with year-round rain')
-biome.labs <- c('Polar &\n subpolar' ,'Alpine' ,'Boreal zone' ,'Temperate\n midlatitudes' ,
-                'Dry midlatitudes' ,'Dry tropics\n & subtropics' ,'Subtropics -\n year-round rain' ,
-                'Subtropics -\n winter rain' ,'Tropics -\n summer rain' ,'Tropics -\n year-round rain')
+biome.order <- c('Alpine' ,
+                 'Boreal zone' ,
+                 'Dry midlatitudes' ,
+                 'Dry tropics and subtropics' ,
+                 'Polar and subpolar zone' ,
+                 'Subtrop. with year-round rain' ,
+                 'Subtropics with winter rain' ,
+                 'Temperate midlatitudes' ,
+                 'Tropics with summer rain' ,
+                 'Tropics with year-round rain')
+biome.labs <- c('Alpine' ,
+                'Boreal zone' ,
+                'Dry midlatitudes' ,
+                'Dry tropics\n & subtropics' ,
+                'Polar &\n subpolar' ,
+                'Subtropics -\n year-round rain' ,
+                'Subtropics -\n winter rain' ,
+                'Temperate\n midlatitudes' ,
+                'Tropics -\n summer rain' ,
+                'Tropics -\n year-round rain')
 
 plotdistr <- mydata %>% 
   mutate(sBiomeName=factor(sBiomeName, levels=biome.order, labels=biome.labs)) %>% 
   mutate(plot_size=cut(Rel.area, c(0,150, 600, 1200, Inf), labels=c("(0, 150]", "(150, 600]", "(600, 1200]", ">1200"))) %>% 
+  mutate(isforest=factor(isforest, levels=c("for", "nonfor"), labels=c("Forest", "Non forest"))) %>%   
   group_by(isforest, sBiomeName, plot_size) %>% 
-  mutate(isforest=factor(isforest, levels=c("for", "nonfor"), labels=c("Forest", "Non forest"))) %>% 
   summarize(n=n()) %>% 
-  complete(isforest, sBiomeName, plot_size, fill=list(n=NA))
+  ungroup() %>% 
+  tidyr::complete(isforest, sBiomeName, plot_size, fill=list(n=NA))
 
 ggplotsize <- ggplot(data=plotdistr) + 
   geom_bar(aes(x=sBiomeName, y=n, group=plot_size, fill=plot_size), stat="identity", position ="dodge") + 
@@ -89,6 +104,7 @@ completeness_distr <- mydata %>%
   group_by(sBiomeName, plants_recorded, isforest) %>% 
   mutate(isforest=factor(isforest, levels=c("for", "nonfor"), labels=c("Forest", "Non forest"))) %>% 
   summarize(n=n()) %>% 
+  ungroup() %>% 
   complete(isforest, sBiomeName, plants_recorded, fill=list(n=NA))
 
 ggcompleteness <- ggplot(data=completeness_distr) + 
